@@ -1,0 +1,5 @@
+.env
+redis/
+searxng/settings.yml
+proxy/__pycache__/
+proxy/cookies.json

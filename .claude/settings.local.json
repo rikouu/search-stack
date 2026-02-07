@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(systemctl:*)",
+      "Bash(openclaw:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

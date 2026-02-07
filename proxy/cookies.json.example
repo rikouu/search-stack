@@ -1,0 +1,7 @@
+{
+  "_doc": "按域名存放 Cookie，Browserless 会在加载页面前注入。从浏览器 DevTools → Application → Cookies 导出。",
+  "xiaohongshu.com": [
+    {"name": "web_session", "value": "YOUR_SESSION_VALUE", "domain": ".xiaohongshu.com", "path": "/", "httpOnly": true},
+    {"name": "a1", "value": "YOUR_A1_VALUE", "domain": ".xiaohongshu.com", "path": "/"}
+  ]
+}

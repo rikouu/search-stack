@@ -1,0 +1,89 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: search-redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - /opt/search-stack/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      retries: 3
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: always
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+    volumes:
+      - /opt/search-stack/searxng:/etc/searxng
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 10s
+      retries: 3
+
+  browserless:
+    image: browserless/chrome:latest
+    container_name: browserless
+    restart: always
+    environment:
+      - TOKEN=${BROWSERLESS_TOKEN}
+      - MAX_CONCURRENT_SESSIONS=5
+      - CONNECTION_TIMEOUT=600000
+      - MAX_QUEUE_LENGTH=20
+      - KEEP_ALIVE=true
+      - ENABLE_STEALTH=true
+      - DEFAULT_STEALTH=true
+      - DEFAULT_LAUNCH_ARGS=["--disable-blink-features=AutomationControlled","--disable-features=IsolateOrigins,site-per-process"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/pressure?token=${BROWSERLESS_TOKEN}"]
+      interval: 10s
+      retries: 3
+      start_period: 15s
+
+  search-proxy:
+    build: ./proxy
+    container_name: search-proxy
+    restart: always
+    ports:
+      - "127.0.0.1:17080:7080"
+    environment:
+      # ====== Provider keys ======
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - SERPER_API_KEY=${SERPER_API_KEY}
+
+      # ====== 内网服务地址 ======
+      - SEARXNG_URL=http://searxng:8080
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # ====== 稳定优先顺序 ======
+      - ORDER=tavily,serper,searxng
+
+      # ====== 鉴权与限流 ======
+      - API_KEYS=${PROXY_API_KEY}
+      - RATE_LIMIT_PER_MIN=120
+
+      # ====== 缓存 ======
+      - CACHE_TTL=900
+
+      # ====== 强抓取（给 OpenClaw 用）======
+      - BROWSERLESS_HTTP=http://browserless:3000
+      - BROWSERLESS_TOKEN=${BROWSERLESS_TOKEN}
+      - FETCH_TIMEOUT=25
+      - MAX_FETCH_BYTES=2000000
+
+    volumes:
+      - /opt/search-stack/proxy/cookies.json:/app/cookies.json
+    depends_on:
+      redis:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+      browserless:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-H", "X-API-Key: ${PROXY_API_KEY}", "http://localhost:7080/health"]
+      interval: 10s
+      retries: 3

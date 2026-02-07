@@ -1,0 +1,20 @@
+use_default_settings: true
+
+server:
+  secret_key: "CHANGE_ME"
+  limiter: false
+  image_proxy: true
+
+ui:
+  static_use_hash: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 20.0
