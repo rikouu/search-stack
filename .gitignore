@@ -3,3 +3,5 @@ redis/
 searxng/settings.yml
 proxy/__pycache__/
 proxy/cookies.json
+plugin/node_modules/
+plugin/package-lock.json
