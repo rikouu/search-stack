@@ -548,11 +548,11 @@ export default function register(api: OpenClawPluginApi) {
       name: "tikhub_call",
       label: "TikHub Social Media API",
       description:
-        "Call any TikHub social media API tool (803 tools across Douyin, TikTok, Xiaohongshu, " +
-        "Weibo, Bilibili, Instagram, YouTube, Twitter/X, etc.). " +
-        "Use this for social media platform data that search-stack can't scrape due to anti-bot. " +
-        "Common tools: tiktok_web_fetch_search_video, douyin_app_fetch_hot_search_list, " +
-        "xiaohongshu_app_get_note_info, weibo_web_v2_fetch_hot_search_summary. " +
+        "LAST RESORT: Third-party social media API. " +
+        "ONLY use AFTER: (1) web_search tried, (2) web_fetch tried, (3) login link sent to user, " +
+        "(4) user explicitly declined to login or said 'use backup'. " +
+        "NEVER call this as the first step. Always try own tools first. " +
+        "Covers: Douyin, TikTok, Xiaohongshu, Weibo, Bilibili, Instagram, YouTube, Twitter/X. " +
         "Has automatic fallback: if TikHub fails and the request has a keyword, " +
         "it falls back to web search automatically.",
       parameters: Type.Object({

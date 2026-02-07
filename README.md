@@ -524,7 +524,46 @@ mcporter call search-stack.web_search query="关键词" --output json
 
 **Q: SKILL.md 更新后 AI 行为没变化**
 
-同上——旧 session 缓存了旧的 SKILL.md 内容。归档旧 session 后重启即可。
+这是最容易踩的坑之一。原因和解决方案：
+
+**背景机制：** OpenClaw 有 Skills Watcher（默认开启，`skills.load.watch: true`），会监控 SKILL.md 文件变化并 bump 版本号。但这只刷新 skill **列表**（哪些 skill 可用），不强制 AI 重新读取 SKILL.md 内容。
+
+**为什么改了 SKILL.md 不生效：**
+
+1. AI 不是每轮都 read SKILL.md — 它只在 session 首轮或判断需要时才读
+2. 读过的内容会缓存在 session 上下文中（可能几十万 token）
+3. 更关键的是，AI 大部分时候**只看工具的 description 字段**（注册时写死的短文本），不看 SKILL.md
+
+**正确的解决方法（按推荐程度排序）：**
+
+1. **修改工具的 description**（最有效）— 工具 description 始终对 AI 可见，修改 `plugin/index.ts` 中的 description 字段 → 重启 OpenClaw → 新 session 立即生效。关键行为约束应写在 description 里，不只写在 SKILL.md
+2. **归档旧 session** — 强制新 session 重新加载所有上下文：
+   ```bash
+   # 归档所有活跃 session
+   for f in ~/.openclaw/agents/main/sessions/*.jsonl; do
+     mv "$f" "$f.archived"
+   done
+
+   # 清空注册表
+   echo '{"sessions":[]}' > ~/.openclaw/agents/main/sessions/sessions.json
+
+   # 重启
+   sudo systemctl restart openclaw
+   ```
+3. **等 Skills Watcher 生效** — 如果只改了 SKILL.md 的补充说明（不涉及核心行为），可以等 AI 在新一轮对话中被触发重新 read SKILL.md
+
+**最佳实践：** 核心行为约束（如"先用 A 工具再用 B 工具"）写在工具 description 里，详细流程和示例写在 SKILL.md 里。这样即使 AI 没 read SKILL.md，工具 description 也能兜底。
+
+**Q: 插件代码（index.ts）更新后需要做什么**
+
+插件运行在 OpenClaw 进程内，代码变更后需要：
+
+```bash
+# 重启 OpenClaw（重新加载插件代码）
+sudo systemctl restart openclaw
+```
+
+如果同时改了 SKILL.md，建议一并归档旧 session（见上一条）。
 
 ---
 

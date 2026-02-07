@@ -67,6 +67,9 @@ canvas{max-width:100%;max-height:100%;cursor:default;background:#111}
 <div class="canvas-wrap" id="wrap">
   <div class="overlay" id="overlay">Enter a URL and click Go</div>
   <canvas id="screen" width="1280" height="800" tabindex="0" style="display:none"></canvas>
+  <!-- Hidden input for mobile virtual keyboard -->
+  <input type="text" id="mobileKb" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+    style="position:absolute;left:-9999px;top:50%;width:1px;height:1px;opacity:0;font-size:16px;">
 </div>
 
 <div class="bottombar">
@@ -84,6 +87,8 @@ const $ = id => document.getElementById(id);
 const canvas = $('screen'), ctx = canvas.getContext('2d');
 const urlInput = $('url'), goBtn = $('go'), saveBtn = $('save'), closeBtn = $('close');
 const overlay = $('overlay'), infoEl = $('info'), toastEl = $('toast');
+const mobileKb = $('mobileKb');
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 const params = new URLSearchParams(location.search);
 const apiKey = params.get('key') || '';
@@ -252,7 +257,10 @@ function tcoords(t) {
   };
 }
 canvas.addEventListener('touchstart', e => {
-  e.preventDefault(); canvas.focus();
+  e.preventDefault();
+  // Focus hidden input to trigger virtual keyboard on mobile
+  if (isMobile && started) mobileKb.focus();
+  else canvas.focus();
   const {x, y} = tcoords(e.touches[0]);
   send({ type:'mouse', action:'mousePressed', x, y, button:'left', clickCount:1 });
 }, { passive: false });
@@ -266,6 +274,28 @@ canvas.addEventListener('touchend', e => {
   const {x, y} = tcoords(e.changedTouches[0]);
   send({ type:'mouse', action:'mouseReleased', x, y, button:'left', clickCount:1 });
 }, { passive: false });
+
+// ---- Mobile keyboard input relay ----
+// The hidden input captures virtual keyboard events and forwards them via CDP
+mobileKb.addEventListener('input', e => {
+  const val = mobileKb.value;
+  if (!val) return;
+  // Send each character as keyDown + keyUp
+  for (const ch of val) {
+    send({ type:'key', action:'keyDown', key:ch, code:'', text:ch, modifiers:0, keyCode:0 });
+    send({ type:'key', action:'keyUp', key:ch, code:'', modifiers:0, keyCode:0 });
+  }
+  mobileKb.value = '';
+});
+mobileKb.addEventListener('keydown', e => {
+  // Handle special keys (Backspace, Enter, Tab) that don't fire 'input' event
+  if (e.key === 'Backspace' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
+    e.preventDefault();
+    const kc = e.keyCode || 0;
+    send({ type:'key', action:'rawKeyDown', key:e.key, code:e.code, text:'', modifiers:mods(e), keyCode:kc });
+    send({ type:'key', action:'keyUp', key:e.key, code:e.code, modifiers:mods(e), keyCode:kc });
+  }
+});
 
 connect();
 </script>

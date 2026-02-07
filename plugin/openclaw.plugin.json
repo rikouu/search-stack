@@ -9,7 +9,8 @@
       "enabled": { "type": "boolean" },
       "apiUrl": { "type": "string", "description": "search-stack REST API URL" },
       "apiKey": { "type": "string", "description": "API key for search-stack" },
-      "tikhubApiKey": { "type": "string", "description": "TikHub API key (optional)" }
+      "tikhubApiKey": { "type": "string", "description": "TikHub API key (optional)" },
+      "publicUrl": { "type": "string", "description": "Public URL for Cookie Catcher links (defaults to apiUrl)" }
     }
   }
 }
