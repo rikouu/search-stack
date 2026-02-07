@@ -248,7 +248,12 @@ openclaw plugins install --link /opt/search-stack/plugin/
 
 #### 步骤 4：创建 Skill 文件
 
-创建 `~/.openclaw/workspace/skills/web-search/SKILL.md`，内容参见仓库中的 SKILL.md 示例。Skill 指导 AI 何时以及如何使用搜索工具（两步法原则、Cookie 工作流等）。
+```bash
+mkdir -p ~/.openclaw/workspace/skills/web-search/
+cp /opt/search-stack/skill-template/SKILL.md ~/.openclaw/workspace/skills/web-search/SKILL.md
+```
+
+Skill 指导 AI 何时以及如何使用搜索工具（两步法原则、Cookie 工作流、TikHub 优先级等）。模板文件位于 `skill-template/SKILL.md`，可根据需要自行修改。
 
 #### 步骤 5：重启并验证
 
@@ -322,11 +327,14 @@ mcporter list
 | 工具 | 说明 |
 |------|------|
 | `web_search` | 多引擎搜索，支持 `enrich` 全文抓取 |
-| `web_fetch` | 抓取网页正文，支持 Chrome 渲染 |
+| `page_fetch` | 抓取网页正文，支持 Cookie 注入 + Chrome 渲染 + 登录检测 |
 | `cookies_list` | 列出已配置 Cookie 的域名 |
 | `cookies_update` | 添加/更新域名 Cookie（支持 raw 字符串粘贴） |
 | `cookies_delete` | 删除域名 Cookie |
+| `cookie_catcher_link` | 生成远程浏览器登录链接（Cookie Catcher） |
 | `tikhub_call` | 调用 TikHub 社交媒体 API（需配置 Key，按需使用） |
+
+> **注意：** 抓取工具名为 `page_fetch` 而非 `web_fetch`。这是为了避免与 OpenClaw 内置的 `web_fetch` 工具名冲突。内置 `web_fetch` 不支持 Cookie 注入和 Chrome 渲染，使用同名会导致 AI 调用错误的工具。
 
 ### Cookie 工作流实战
 
@@ -337,7 +345,7 @@ mcporter list
 ```
 用户: "帮我看看这个网页 https://zhuanlan.zhihu.com/p/xxxx"
 
-AI: 调用 web_fetch → 正文不完整（只有标题/摘要）
+AI: 调用 page_fetch → 正文不完整（只有标题/摘要）
 AI: "这个网站的反爬比较严格，正文没有完整抓到。
      如果你需要完整内容，可以提供该网站的 Cookie：
      1. 在浏览器中打开该网址并登录
@@ -828,6 +836,8 @@ search-stack/
 ├── plugin/
 │   ├── openclaw.plugin.json  # OpenClaw 原生插件 manifest
 │   └── index.ts              # 插件入口（推荐集成方式）
+├── skill-template/
+│   └── SKILL.md              # OpenClaw Skill 模板（复制到 ~/.openclaw/workspace/skills/web-search/）
 ├── proxy/
 │   ├── Dockerfile            # 代理服务镜像
 │   ├── app.py                # FastAPI 主程序（REST API）

@@ -201,13 +201,13 @@ server.registerTool(
 );
 
 // ---------------------------------------------------------------------------
-// Tool: web_fetch — POST /fetch
+// Tool: page_fetch — POST /fetch
 // ---------------------------------------------------------------------------
 
 server.registerTool(
-  "web_fetch",
+  "page_fetch",
   {
-    title: "Fetch Web Page",
+    title: "Fetch Web Page (search-stack)",
     description:
       "Fetch a URL and extract its main text content. Supports headless Chrome rendering " +
       "for anti-bot / JS-heavy pages. When the response contains '** LOGIN REQUIRED **', " +

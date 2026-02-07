@@ -196,14 +196,14 @@ export default function register(api: OpenClawPluginApi) {
   // ---------------------------------------------------------------------------
 
   api.registerTool({
-    name: "web_fetch",
-    label: "Fetch Web Page",
+    name: "page_fetch",
+    label: "Fetch Web Page (search-stack)",
     description:
-      "Fetch a URL and extract its main text content. Supports headless Chrome rendering " +
-      "for anti-bot / JS-heavy pages. When the response contains '** LOGIN REQUIRED **', " +
-      "the site needs cookies — send the included login link to the user. " +
-      "IMPORTANT: After user logs in via Cookie Catcher, you MUST set bypass_cache=true to skip " +
-      "the cached pre-login result and fetch fresh content with the new cookies.",
+      "Fetch a URL and extract main text via search-stack backend (NOT the built-in web_fetch). " +
+      "Features: headless Chrome rendering, cookie injection, anti-bot bypass, login detection. " +
+      "When the response contains '** LOGIN REQUIRED **', send the included login link to the user. " +
+      "IMPORTANT: After user logs in, you MUST set bypass_cache=true to get fresh content. " +
+      "Use this instead of the built-in web_fetch for: anti-bot sites, Chinese platforms, JS-heavy SPAs.",
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),
       render: Type.Optional(
