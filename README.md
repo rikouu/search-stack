@@ -66,7 +66,8 @@ AI Agent 专用的 Web 搜索与抓取中间层。
 - **抗反爬** — Browserless Stealth 模式，绕过 Cloudflare / JS Challenge
 - **正文提取** — trafilatura + BeautifulSoup + readability 三引擎，精准提取正文
 - **Cookie 管理** — API 动态增删 Cookie，自动注入 Chrome 渲染，支持直接粘贴浏览器 Cookie
-- **登录检测** — 自动检测"需要登录"页面（中英文关键词 + SPA 登录墙），返回 `needs_login` 标记并引导 Cookie 更新
+- **登录/反爬检测** — 多维度启发式检测：HTTP 状态码（401/403）、文本关键词（中英日）、页面标题、HTML 结构（密码框、CAPTCHA 嵌入、meta refresh 重定向）、SPA 登录墙，返回 `needs_login` 标记引导 Cookie 更新
+- **Cookie Catcher** — 浏览器内远程登录：通过 WebSocket + CDP Screencast 在 Web UI 中操控远程 Chrome 完成登录，一键保存 Cookie
 - **SSRF 防护** — 拒绝访问私网 IP（127/10/172.16/192.168/169.254）
 - **URL 去重** — 自动去除追踪参数（utm_*、fbclid 等），同域名结果限制
 - **Redis 缓存** — 15 分钟 TTL，重复查询即时返回
@@ -329,7 +330,9 @@ mcporter list
 
 ### Cookie 工作流实战
 
-以知乎为例，完整的 Cookie 工作流如下：
+有两种方式获取 Cookie：
+
+**方式一：手动复制粘贴（适用于桌面端）**
 
 ```
 用户: "帮我看看这个网页 https://zhuanlan.zhihu.com/p/xxxx"
@@ -347,6 +350,17 @@ AI: "这个网站的反爬比较严格，正文没有完整抓到。
 AI: 自动提取域名 zhihu.com → cookies_update → 保存成功
 AI: 用 bypass_cache:true 重新抓取 → 拿到完整文章内容
 ```
+
+**方式二：Cookie Catcher 远程登录（适用于复杂登录流程）**
+
+```
+1. 浏览器打开：http://YOUR_HOST:17080/cookie-catcher?key=API_KEY&url=https://threads.net
+2. 在远程 Chrome 画面中完成登录（支持鼠标/键盘/触屏操作）
+3. 点击 "Save Cookies" → 自动保存到 cookies.json
+4. 后续 /fetch 请求自动注入 Cookie
+```
+
+适合需要 OAuth 跳转、二维码扫码、手机验证码等复杂登录场景。
 
 ---
 
@@ -494,7 +508,9 @@ SKILL.md 中必须明确写出**所有**触发 Cookie 引导的条件：
 
 **解决方案：** 从浏览器重新导出 Cookie（确保已登录），通过 `cookies_update` 更新后用 `bypass_cache: true` 重试。
 
-`detect_needs_login` 已支持识别 Threads/Instagram/Facebook 的登录墙（"Log in with your Instagram account"、"Forgot password?" 等关键词），会返回明确的 `needs_login: true` 提示。
+`detect_needs_login` 支持多维度检测：HTTP 状态码（401/403）、文本关键词（中英日）、页面标题、HTML 密码框/CAPTCHA/meta refresh、SPA 登录墙（Threads/Instagram/Facebook），会返回明确的 `needs_login: true` 提示。
+
+也可以使用 Cookie Catcher 远程登录：打开 `/cookie-catcher?key=API_KEY&url=TARGET_URL`，在远程 Chrome 中完成登录后一键保存 Cookie。
 
 **Q: AI 用 `exec` + `curl` 调用 Brave 而不是 `mcporter call`**
 
@@ -606,7 +622,7 @@ curl -s -X POST http://127.0.0.1:17080/search \
 }
 ```
 
-当页面需要登录时（支持中英文登录页检测，包括 Threads/Instagram 等 SPA 登录墙）：
+当页面需要登录或被反爬拦截时，返回 `needs_login: true`：
 
 ```json
 {
@@ -616,6 +632,21 @@ curl -s -X POST http://127.0.0.1:17080/search \
 ```
 
 `has_cookies: true` 时表示已有 Cookie 但已过期，需要重新导出。
+
+检测规则覆盖以下信号（按优先级排列）：
+
+| 信号 | 条件 | 示例 |
+|------|------|------|
+| HTTP 401 | 直接判定 | API 端点未认证 |
+| HTTP 403 + 短内容 | text < 2000 字符 | 访问被拒绝页面 |
+| 文本登录关键词 | 1 hit + < 500 字符，或 2+ hits | "请登录"、"sign in to continue"、"verify you are human" |
+| 页面标题含登录词 | + text < 2000 字符 | `<title>Sign In - Example</title>` |
+| HTML 密码输入框 | + text < 3000 字符 | `<input type="password">` |
+| Meta refresh → 登录 URL | 直接判定 | `<meta http-equiv="refresh" content="0;url=/login">` |
+| CAPTCHA 嵌入 | + text < 1000 字符 | reCAPTCHA、hCaptcha、Cloudflare Turnstile |
+| 空壳备案页 | 2+ hits + < 800 字符 | 仅含 ICP 备案号的页面（小红书等） |
+
+支持中文、英文、日文登录关键词，以及 OAuth 提示（"continue with Google"）、付费墙（"subscribe to continue"）、Cloudflare 验证（"checking your browser"）等。
 
 ### Cookie 管理
 
@@ -638,6 +669,56 @@ DELETE /cookies/zhihu.com
 
 # 从 cookies.json 重新加载
 POST /cookies/reload
+```
+
+### Cookie Catcher（远程浏览器登录）
+
+对于无法直接复制 Cookie 的场景（如手机端、复杂 OAuth 流程），Cookie Catcher 提供 Web UI 远程操控 Chrome 完成登录：
+
+```
+浏览器访问：GET /cookie-catcher?key=YOUR_API_KEY[&url=https://target-site.com]
+```
+
+**工作流程：**
+
+1. 浏览器打开 `/cookie-catcher?key=API_KEY`，建立 WebSocket 连接
+2. 在地址栏输入目标网站 URL，点击 Go
+3. 通过 CDP Screencast 实时显示远程 Chrome 画面（JPEG 流）
+4. 用户在画面上操作（鼠标点击、键盘输入、滚动）完成登录
+5. 点击 "Save Cookies" 一键提取并保存当前域名的所有 Cookie
+6. Cookie 自动写入 `cookies.json`，后续 `/fetch` 渲染请求自动注入
+
+**技术细节：**
+
+| 参数 | 值 |
+|------|-----|
+| WebSocket 端点 | `WS /cookie-catcher/ws?key=API_KEY` |
+| 最大并发会话 | 2 |
+| 会话超时 | 10 分钟自动关闭 |
+| 画面分辨率 | 1280 x 800 |
+| 画面格式 | JPEG，quality=60 |
+| 输入支持 | 鼠标（点击/移动/滚轮）、键盘、触屏 |
+
+**WebSocket 消息协议：**
+
+客户端 → 服务端：
+```json
+{"type": "navigate", "url": "https://example.com"}
+{"type": "mouse", "action": "mousePressed", "x": 100, "y": 200, "button": "left"}
+{"type": "key", "action": "keyDown", "key": "a", "code": "KeyA", "text": "a"}
+{"type": "scroll", "x": 640, "y": 400, "deltaX": 0, "deltaY": 100}
+{"type": "save_cookies", "domain": "example.com"}
+{"type": "close"}
+```
+
+服务端 → 客户端：
+```json
+{"type": "frame", "data": "<base64 JPEG>"}
+{"type": "url", "url": "https://example.com/dashboard"}
+{"type": "title", "title": "Dashboard"}
+{"type": "cookies_saved", "domain": "example.com", "count": 15, "names": ["session", "token", ...]}
+{"type": "error", "message": "Too many active sessions (max 2)"}
+{"type": "closed"}
 ```
 
 ---
@@ -711,10 +792,13 @@ search-stack/
 ├── proxy/
 │   ├── Dockerfile            # 代理服务镜像
 │   ├── app.py                # FastAPI 主程序（REST API）
+│   ├── cookie_catcher.py     # Cookie Catcher（远程浏览器 CDP 会话管理）
 │   ├── mcp-server.ts         # MCP Server（stdio，备选集成方式）
 │   ├── cookies.json          # Cookie 存储（运行时自动更新）
 │   ├── cookies.json.example  # Cookie 格式示例
-│   └── requirements.txt      # Python 依赖
+│   ├── requirements.txt      # Python 依赖
+│   └── static/
+│       └── cookie-catcher.html  # Cookie Catcher Web UI
 └── searxng/
     ├── settings.yml          # SearXNG 配置（首次启动自动生成）
     └── settings.yml.example  # SearXNG 配置模板
