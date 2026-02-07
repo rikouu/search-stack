@@ -135,6 +135,10 @@ def detect_needs_login(text: str, url: str) -> bool:
         "sign in to continue", "log in to continue",
         "you need to log in", "you must be logged in",
         "authentication required",
+        # Social media / SPA login walls (Threads, Instagram, etc.)
+        "log in with your instagram",
+        "log in with your facebook",
+        "forgot password?",
     ]
     keyword_hits = sum(1 for kw in login_keywords if kw in text_lower)
     if keyword_hits >= 1 and len(stripped) < 500:

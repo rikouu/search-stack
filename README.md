@@ -66,7 +66,7 @@ AI Agent 专用的 Web 搜索与抓取中间层。
 - **抗反爬** — Browserless Stealth 模式，绕过 Cloudflare / JS Challenge
 - **正文提取** — trafilatura + BeautifulSoup + readability 三引擎，精准提取正文
 - **Cookie 管理** — API 动态增删 Cookie，自动注入 Chrome 渲染，支持直接粘贴浏览器 Cookie
-- **登录检测** — 自动检测"需要登录"页面，返回 `needs_login` 标记
+- **登录检测** — 自动检测"需要登录"页面（中英文关键词 + SPA 登录墙），返回 `needs_login` 标记并引导 Cookie 更新
 - **SSRF 防护** — 拒绝访问私网 IP（127/10/172.16/192.168/169.254）
 - **URL 去重** — 自动去除追踪参数（utm_*、fbclid 等），同域名结果限制
 - **Redis 缓存** — 15 分钟 TTL，重复查询即时返回
@@ -484,6 +484,18 @@ SKILL.md 中必须明确写出**所有**触发 Cookie 引导的条件：
 
 同时要明确告诉 AI **"不要做什么"**——不要用解释文章内容来代替抓取失败，不要跳过引导。如果只写 `LOGIN REQUIRED` 一个条件，AI 在拿到部分内容时不会触发引导。
 
+**Q: Threads/Instagram 等 SPA 网站抓取失败，提示"JS SPA requiring Chrome"**
+
+这通常**不是**缺少 Chrome 的问题（Browserless 默认就在运行）。真实原因是 Cookie 过期：
+
+1. Browserless 用 Chrome 渲染 + 注入了 Cookie，但 session 已失效
+2. React SPA 没有渲染实际内容，返回登录页
+3. 登录页文本很短，AI 误以为是 JS 渲染失败
+
+**解决方案：** 从浏览器重新导出 Cookie（确保已登录），通过 `cookies_update` 更新后用 `bypass_cache: true` 重试。
+
+`detect_needs_login` 已支持识别 Threads/Instagram/Facebook 的登录墙（"Log in with your Instagram account"、"Forgot password?" 等关键词），会返回明确的 `needs_login: true` 提示。
+
 **Q: AI 用 `exec` + `curl` 调用 Brave 而不是 `mcporter call`**
 
 OpenClaw 的 AI 通过 `exec` 工具执行 shell 命令来调用 MCP。SKILL.md 中必须使用具体的命令格式：
@@ -594,7 +606,7 @@ curl -s -X POST http://127.0.0.1:17080/search \
 }
 ```
 
-当页面需要登录时：
+当页面需要登录时（支持中英文登录页检测，包括 Threads/Instagram 等 SPA 登录墙）：
 
 ```json
 {
@@ -602,6 +614,8 @@ curl -s -X POST http://127.0.0.1:17080/search \
   "has_cookies": false
 }
 ```
+
+`has_cookies: true` 时表示已有 Cookie 但已过期，需要重新导出。
 
 ### Cookie 管理
 
