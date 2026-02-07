@@ -30,11 +30,13 @@ export default function register(api: OpenClawPluginApi) {
     apiUrl?: string;
     apiKey?: string;
     tikhubApiKey?: string;
+    publicUrl?: string;
   }) ?? {};
 
   const BASE_URL = cfg.apiUrl || "http://127.0.0.1:17080";
   const API_KEY = cfg.apiKey || "";
   const TIKHUB_API_KEY = cfg.tikhubApiKey || "";
+  const PUBLIC_URL = cfg.publicUrl || cfg.apiUrl || "http://127.0.0.1:17080";
   const TIKHUB_URL = "https://mcp.tikhub.io/tools/call";
 
   // ---------------------------------------------------------------------------
@@ -199,7 +201,7 @@ export default function register(api: OpenClawPluginApi) {
     description:
       "Fetch a URL and extract its main text content. Supports headless Chrome rendering " +
       "for anti-bot / JS-heavy pages. When the response contains '** LOGIN REQUIRED **', " +
-      "the site needs cookies — use cookies_update to provide them, then retry with bypass_cache.",
+      "the site needs cookies — send the included login link to the user, then retry with bypass_cache.",
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),
       render: Type.Optional(
@@ -254,22 +256,19 @@ export default function register(api: OpenClawPluginApi) {
         lines.push("** LOGIN REQUIRED **");
         lines.push("");
         const domain = new URL(data.url).hostname.replace(/^www\./, "");
+        const loginTarget = `https://${domain}`;
+        const link = `${PUBLIC_URL}/cookie-catcher?key=${encodeURIComponent(API_KEY)}&url=${encodeURIComponent(loginTarget)}`;
+
         if (data.has_cookies) {
-          lines.push(
-            `The cookies for ${domain} appear to have expired. Please paste fresh cookies from your browser.`,
-          );
+          lines.push(`${domain} 的 Cookie 已过期，需要重新登录。`);
         } else {
-          lines.push(
-            `This site requires login. Please paste your browser cookies for ${domain}.`,
-          );
+          lines.push(`${domain} 需要登录才能访问完整内容。`);
         }
-        lines.push(
-          `(DevTools → Application → Cookies, or copy the Cookie header value)`,
-        );
         lines.push("");
-        lines.push(
-          `After saving cookies with cookies_update, retry this fetch with bypass_cache=true.`,
-        );
+        lines.push(`请在浏览器中打开以下链接登录，Cookie 会自动保存：`);
+        lines.push(link);
+        lines.push("");
+        lines.push(`登录完成后告诉我，我会用 bypass_cache=true 重新抓取。`);
       } else {
         if (data.title) lines.push(`Title: ${data.title}`);
         if (data.url) lines.push(`URL: ${data.url}`);
@@ -397,6 +396,36 @@ export default function register(api: OpenClawPluginApi) {
         content: [
           { type: "text" as const, text: `Deleted cookies for ${data.domain}.` },
         ],
+      };
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tool: cookie_catcher_link
+  // ---------------------------------------------------------------------------
+
+  api.registerTool({
+    name: "cookie_catcher_link",
+    label: "Cookie Login Link",
+    description:
+      "Generate a remote browser login link. The user opens it in their browser, " +
+      "logs into the target site, and cookies are automatically captured and saved. " +
+      "Use when: web_fetch returns LOGIN REQUIRED, user asks to add cookies, " +
+      "or you need login cookies for a site.",
+    parameters: Type.Object({
+      url: Type.Optional(Type.String({
+        description: "Target URL to open (e.g. https://youtube.com). Auto-navigates on open.",
+      })),
+    }),
+    async execute(_id: string, params: Record<string, unknown>) {
+      const targetUrl = (params.url as string) || "";
+      let link = `${PUBLIC_URL}/cookie-catcher?key=${encodeURIComponent(API_KEY)}`;
+      if (targetUrl) link += `&url=${encodeURIComponent(targetUrl)}`;
+      return {
+        content: [{
+          type: "text" as const,
+          text: `请在浏览器中打开以下链接登录，Cookie 会自动保存：\n${link}\n\n登录完成后告诉我，我会重新抓取。`,
+        }],
       };
     },
   });

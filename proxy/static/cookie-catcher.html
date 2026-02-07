@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cookie Catcher</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:#1a1a2e;color:#e0e0e0;
+  display:flex;flex-direction:column;height:100vh;overflow:hidden;
+}
+.toolbar{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 12px;background:#16213e;border-bottom:1px solid #0f3460;
+}
+.toolbar input{
+  flex:1;padding:8px 12px;border:1px solid #0f3460;
+  border-radius:6px;background:#1a1a2e;color:#e0e0e0;
+  font-size:14px;outline:none;
+}
+.toolbar input:focus{border-color:#e94560}
+.btn{
+  padding:8px 16px;border:none;border-radius:6px;
+  font-size:14px;cursor:pointer;font-weight:500;white-space:nowrap;
+}
+.btn:disabled{opacity:.4;cursor:default}
+.btn-go{background:#e94560;color:#fff}
+.btn-go:hover:not(:disabled){background:#c73e54}
+.canvas-wrap{
+  flex:1;display:flex;justify-content:center;align-items:center;
+  background:#0a0a15;overflow:hidden;position:relative;
+}
+canvas{max-width:100%;max-height:100%;cursor:default;background:#111}
+.overlay{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:16px;color:#888;text-align:center;line-height:1.6;
+}
+.bottombar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 12px;background:#16213e;border-top:1px solid #0f3460;
+}
+.info{font-size:13px;color:#888;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.actions{display:flex;gap:8px}
+.btn-save{background:#28a745;color:#fff}
+.btn-save:hover:not(:disabled){background:#218838}
+.btn-close{background:#6c757d;color:#fff}
+.btn-close:hover:not(:disabled){background:#5a6268}
+.toast{
+  position:fixed;top:16px;right:16px;max-width:420px;
+  padding:12px 20px;border-radius:8px;font-size:14px;
+  z-index:100;opacity:0;transition:opacity .3s;pointer-events:none;
+}
+.toast.show{opacity:1}
+.toast.ok{background:#28a745;color:#fff}
+.toast.err{background:#dc3545;color:#fff}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <input type="text" id="url" placeholder="https://threads.net" autocomplete="off" spellcheck="false">
+  <button class="btn btn-go" id="go">Go</button>
+</div>
+
+<div class="canvas-wrap" id="wrap">
+  <div class="overlay" id="overlay">Enter a URL and click Go</div>
+  <canvas id="screen" width="1280" height="800" tabindex="0" style="display:none"></canvas>
+</div>
+
+<div class="bottombar">
+  <div class="info" id="info">Connecting...</div>
+  <div class="actions">
+    <button class="btn btn-save" id="save" disabled>Save Cookies</button>
+    <button class="btn btn-close" id="close" disabled>Close</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('screen'), ctx = canvas.getContext('2d');
+const urlInput = $('url'), goBtn = $('go'), saveBtn = $('save'), closeBtn = $('close');
+const overlay = $('overlay'), infoEl = $('info'), toastEl = $('toast');
+
+const params = new URLSearchParams(location.search);
+const apiKey = params.get('key') || '';
+const initUrl = params.get('url') || '';
+
+let ws = null, started = false;
+let remoteW = 1280, remoteH = 800;
+let toastTimer = null;
+
+function toast(msg, ok = true) {
+  toastEl.textContent = msg;
+  toastEl.className = 'toast ' + (ok ? 'ok' : 'err') + ' show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.className = 'toast'; }, 4000);
+}
+
+function send(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/cookie-catcher/ws?key=' + encodeURIComponent(apiKey));
+
+  ws.onopen = () => {
+    infoEl.textContent = 'Connected — enter URL and click Go';
+    if (initUrl) {
+      urlInput.value = initUrl;
+      doNavigate(initUrl);
+    }
+  };
+
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    switch (m.type) {
+      case 'frame':
+        const img = new Image();
+        img.onload = () => {
+          if (canvas.width !== img.width || canvas.height !== img.height) {
+            canvas.width = img.width; canvas.height = img.height;
+            remoteW = img.width; remoteH = img.height;
+          }
+          ctx.drawImage(img, 0, 0);
+          canvas.style.display = 'block';
+          overlay.style.display = 'none';
+        };
+        img.src = 'data:image/jpeg;base64,' + m.data;
+        break;
+      case 'url':
+        urlInput.value = m.url;
+        break;
+      case 'title':
+        infoEl.textContent = m.title;
+        document.title = m.title + ' — Cookie Catcher';
+        break;
+      case 'cookies_saved':
+        toast('Saved ' + m.count + ' cookies for ' + m.domain + ' — closing...');
+        break;
+      case 'error':
+        toast(m.message, false);
+        break;
+      case 'closed':
+        toast('Session closed');
+        canvas.style.display = 'none';
+        overlay.textContent = 'Session closed';
+        overlay.style.display = 'block';
+        saveBtn.disabled = true; closeBtn.disabled = true;
+        started = false;
+        break;
+    }
+  };
+
+  ws.onclose = () => {
+    infoEl.textContent = 'Disconnected';
+    saveBtn.disabled = true; closeBtn.disabled = true;
+    started = false;
+  };
+  ws.onerror = () => toast('WebSocket error', false);
+}
+
+function doNavigate(url) {
+  if (!url) return;
+  // Add https:// if missing
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  urlInput.value = url;
+  overlay.textContent = 'Loading...';
+  overlay.style.display = 'block';
+  send({ type: 'navigate', url });
+  saveBtn.disabled = false; closeBtn.disabled = false;
+  started = true;
+}
+
+goBtn.onclick = () => doNavigate(urlInput.value.trim());
+urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') goBtn.click(); });
+
+saveBtn.onclick = () => send({ type: 'save_cookies' });
+closeBtn.onclick = () => send({ type: 'close' });
+
+// ---- Mouse ----
+function coords(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.round((e.clientX - r.left) * remoteW / r.width),
+    y: Math.round((e.clientY - r.top) * remoteH / r.height),
+  };
+}
+function mbtn(e) { return ['left','middle','right'][e.button] || 'left'; }
+
+canvas.addEventListener('mousedown', e => {
+  e.preventDefault(); canvas.focus();
+  const {x, y} = coords(e);
+  send({ type:'mouse', action:'mousePressed', x, y, button:mbtn(e), clickCount:1 });
+});
+canvas.addEventListener('mouseup', e => {
+  e.preventDefault();
+  const {x, y} = coords(e);
+  send({ type:'mouse', action:'mouseReleased', x, y, button:mbtn(e), clickCount:1 });
+});
+let lastMove = 0;
+canvas.addEventListener('mousemove', e => {
+  const now = Date.now();
+  if (now - lastMove < 50) return; // throttle to 20/sec
+  lastMove = now;
+  const {x, y} = coords(e);
+  send({ type:'mouse', action:'mouseMoved', x, y, button:'none', clickCount:0 });
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---- Scroll ----
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const {x, y} = coords(e);
+  send({ type:'scroll', x, y, deltaX:e.deltaX, deltaY:e.deltaY });
+}, { passive: false });
+
+// ---- Keyboard ----
+function mods(e) {
+  let m = 0;
+  if (e.altKey) m |= 1;
+  if (e.ctrlKey) m |= 2;
+  if (e.metaKey) m |= 4;
+  if (e.shiftKey) m |= 8;
+  return m;
+}
+canvas.addEventListener('keydown', e => {
+  e.preventDefault();
+  const mod = mods(e);
+  const kc = e.keyCode || e.which || 0;
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+    send({ type:'key', action:'keyDown', key:e.key, code:e.code, text:e.key, modifiers:mod, keyCode:kc });
+  } else {
+    send({ type:'key', action:'rawKeyDown', key:e.key, code:e.code, text:'', modifiers:mod, keyCode:kc });
+  }
+});
+canvas.addEventListener('keyup', e => {
+  e.preventDefault();
+  send({ type:'key', action:'keyUp', key:e.key, code:e.code, modifiers:mods(e), keyCode:e.keyCode||0 });
+});
+
+// ---- Touch (mobile) ----
+function tcoords(t) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.round((t.clientX - r.left) * remoteW / r.width),
+    y: Math.round((t.clientY - r.top) * remoteH / r.height),
+  };
+}
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); canvas.focus();
+  const {x, y} = tcoords(e.touches[0]);
+  send({ type:'mouse', action:'mousePressed', x, y, button:'left', clickCount:1 });
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const {x, y} = tcoords(e.touches[0]);
+  send({ type:'mouse', action:'mouseMoved', x, y, button:'left', clickCount:0 });
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  const {x, y} = tcoords(e.changedTouches[0]);
+  send({ type:'mouse', action:'mouseReleased', x, y, button:'left', clickCount:1 });
+}, { passive: false });
+
+connect();
+</script>
+</body>
+</html>

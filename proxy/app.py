@@ -12,7 +12,8 @@ from contextlib import asynccontextmanager
 
 import httpx
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from bs4 import BeautifulSoup
@@ -120,12 +121,21 @@ def parse_raw_cookie_string(raw: str, domain: str) -> List[Dict[str, Any]]:
     return cookies
 
 
-def detect_needs_login(text: str, url: str) -> bool:
-    """启发式检测页面是否需要登录（中英文关键词 + 内容长度 + 空壳页面判断）。"""
+def detect_needs_login(text: str, url: str, *,
+                       html: str = "",
+                       status_code: int = 200,
+                       title: str = "") -> bool:
+    """启发式检测页面是否需要登录/反爬拦截（HTTP状态码 + 关键词 + HTML结构 + 标题）。"""
     if not text:
         return False
     text_lower = text.lower()
     stripped = text.strip()
+
+    # 规则 0：HTTP 状态码
+    if status_code == 401:
+        return True
+    if status_code == 403 and len(stripped) < 2000:
+        return True
 
     # 规则 1：明确的登录关键词
     login_keywords = [
@@ -135,10 +145,24 @@ def detect_needs_login(text: str, url: str) -> bool:
         "sign in to continue", "log in to continue",
         "you need to log in", "you must be logged in",
         "authentication required",
-        # Social media / SPA login walls (Threads, Instagram, etc.)
+        # Social media / SPA login walls
         "log in with your instagram",
         "log in with your facebook",
         "forgot password?",
+        # OAuth / social login prompts
+        "sign in with", "continue with google", "continue with apple",
+        "continue with facebook", "create an account",
+        "sign up to continue", "join to continue",
+        "log in to see", "sign in to see",
+        # CAPTCHA / verification
+        "verify you are human", "complete the captcha",
+        "security verification", "please verify",
+        "checking your browser", "just a moment",
+        # Japanese
+        "ログインしてください", "ログインが必要",
+        # Paywalls (often require login/signup)
+        "subscribe to continue", "members only",
+        "premium content", "subscriber-only",
     ]
     keyword_hits = sum(1 for kw in login_keywords if kw in text_lower)
     if keyword_hits >= 1 and len(stripped) < 500:
@@ -146,7 +170,33 @@ def detect_needs_login(text: str, url: str) -> bool:
     if keyword_hits >= 2:
         return True
 
-    # 规则 2：空壳页面 — 内容很少且全是备案/页脚信息（如小红书搜索页未登录）
+    # 规则 2：页面标题检测
+    if title:
+        title_lower = title.lower()
+        title_login_kw = ["sign in", "log in", "login", "登录", "ログイン", "登入"]
+        if any(kw in title_lower for kw in title_login_kw) and len(stripped) < 2000:
+            return True
+
+    # 规则 3：HTML 结构检测
+    if html:
+        html_lower = html[:50000].lower()
+
+        # 3a: 密码输入框 = 登录表单的直接证据
+        if ('type="password"' in html_lower or "type='password'" in html_lower) and len(stripped) < 3000:
+            return True
+
+        # 3b: Meta refresh 重定向到登录相关 URL
+        if 'http-equiv="refresh"' in html_lower or "http-equiv='refresh'" in html_lower:
+            refresh_login_kw = ["/login", "/signin", "/auth", "/sso", "login."]
+            if any(kw in html_lower for kw in refresh_login_kw):
+                return True
+
+        # 3c: CAPTCHA 嵌入
+        captcha_sigs = ["recaptcha", "hcaptcha", "challenges.cloudflare.com", "turnstile"]
+        if any(s in html_lower for s in captcha_sigs) and len(stripped) < 1000:
+            return True
+
+    # 规则 4：空壳页面 — 内容很少且全是备案/页脚信息（如小红书搜索页未登录）
     boilerplate_keywords = [
         "icp备", "icp证", "沪icp", "京icp", "粤icp", "浙icp",
         "营业执照", "公网安备", "增值电信", "网络文化经营许可",
@@ -631,7 +681,7 @@ async def fetch_and_extract(url: str, render: bool, timeout: float, max_chars: i
         "content_type": resp_headers.get("content-type", ""),
     }
 
-    if detect_needs_login(text, url):
+    if detect_needs_login(text, url, html=html, status_code=status_code, title=extracted.get("title") or ""):
         result["needs_login"] = True
         result["has_cookies"] = bool(get_cookies_for_url(url))
 
@@ -932,3 +982,157 @@ async def mcp_call(req: Request, payload: MCPCallRequest):
         return await fetch(req, fr)
 
     raise HTTPException(400, f"Unknown tool: {tool}")
+
+
+# ===================== Cookie Catcher (remote browser login) =====================
+import cookie_catcher
+
+
+@app.get("/cookie-catcher")
+async def cookie_catcher_page(req: Request):
+    """Serve the Cookie Catcher HTML page."""
+    if API_KEYS:
+        k = get_api_key(req)
+        if not k or k not in API_KEYS:
+            raise HTTPException(401, "Unauthorized: pass ?key=YOUR_API_KEY")
+    return FileResponse("static/cookie-catcher.html", media_type="text/html")
+
+
+@app.websocket("/cookie-catcher/ws")
+async def cookie_catcher_ws(ws: WebSocket):
+    """WebSocket bridge between user browser and remote Chrome CDP session."""
+    key = ws.query_params.get("key", "")
+    if API_KEYS and key not in API_KEYS:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+
+    await ws.accept()
+
+    if not cookie_catcher.can_create():
+        await ws.send_json({
+            "type": "error",
+            "message": f"Too many active sessions (max {cookie_catcher.MAX_SESSIONS})",
+        })
+        await ws.close()
+        return
+
+    session = cookie_catcher.CatcherSession(BROWSERLESS_HTTP, BROWSERLESS_TOKEN)
+
+    # Wire callbacks — forward CDP events to the user's WebSocket
+    async def on_frame(data: str, meta: dict):
+        try:
+            await ws.send_json({"type": "frame", "data": data})
+        except Exception:
+            pass
+
+    async def on_url(url: str):
+        try:
+            await ws.send_json({"type": "url", "url": url})
+        except Exception:
+            pass
+
+    async def on_title(title: str):
+        try:
+            await ws.send_json({"type": "title", "title": title})
+        except Exception:
+            pass
+
+    async def on_close():
+        try:
+            await ws.send_json({"type": "closed"})
+        except Exception:
+            pass
+
+    session.on_frame = on_frame
+    session.on_url = on_url
+    session.on_title = on_title
+    session.on_close = on_close
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            t = msg.get("type")
+
+            if t == "navigate":
+                url = (msg.get("url") or "").strip()
+                if not url:
+                    await ws.send_json({"type": "error", "message": "URL required"})
+                    continue
+                try:
+                    if not session._ws:
+                        await session.start(url)
+                    else:
+                        await session.navigate(url)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": str(e)})
+
+            elif t == "mouse":
+                try:
+                    await session.mouse(
+                        msg.get("action", ""),
+                        msg.get("x", 0), msg.get("y", 0),
+                        msg.get("button", "left"),
+                        msg.get("clickCount", 1),
+                    )
+                except Exception:
+                    pass
+
+            elif t == "key":
+                try:
+                    await session.keyboard(
+                        msg.get("action", ""),
+                        msg.get("key", ""),
+                        msg.get("code", ""),
+                        msg.get("text", ""),
+                        msg.get("modifiers", 0),
+                        msg.get("keyCode", 0),
+                    )
+                except Exception:
+                    pass
+
+            elif t == "scroll":
+                try:
+                    await session.scroll(
+                        msg.get("x", 0), msg.get("y", 0),
+                        msg.get("deltaX", 0), msg.get("deltaY", 0),
+                    )
+                except Exception:
+                    pass
+
+            elif t == "save_cookies":
+                try:
+                    result = await session.extract_cookies(msg.get("domain", ""))
+                    cookies = result["cookies"]
+                    domain = result["domain"]
+                    if not cookies:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": f"No cookies found for {domain} ({result['total']} total in browser)",
+                        })
+                        continue
+                    # Save via existing cookie persistence
+                    _domain_cookies[domain] = cookies
+                    save_cookies()
+                    await ws.send_json({
+                        "type": "cookies_saved",
+                        "domain": domain,
+                        "count": len(cookies),
+                        "names": [c["name"] for c in cookies],
+                    })
+                    # Auto-close after saving — give frontend time to show toast
+                    await asyncio.sleep(2)
+                    await session.close()
+                    break
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"Save failed: {e}"})
+
+            elif t == "close":
+                await session.close()
+                break
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning("cookie-catcher ws error: %s", e)
+    finally:
+        await session.close()
