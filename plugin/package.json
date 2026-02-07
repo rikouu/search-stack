@@ -1,0 +1,11 @@
+{
+  "name": "search-stack",
+  "version": "1.0.0",
+  "description": "Search Stack OpenClaw plugin — web search, fetch, cookies, TikHub",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.48"
+  }
+}

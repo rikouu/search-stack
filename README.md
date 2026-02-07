@@ -188,9 +188,86 @@ curl -s -X POST http://127.0.0.1:17080/fetch \
 
 ## 集成 OpenClaw
 
-Search Stack 可以作为 [OpenClaw](https://openclaw.com) 的默认搜索/抓取工具，替代内置的 Brave 搜索。整个流程分 5 步：安装依赖 → 注册 MCP → 创建 Skill → 禁用 Brave → 重启。
+Search Stack 可以作为 [OpenClaw](https://openclaw.com) 的默认搜索/抓取工具，替代内置的 Brave 搜索。有两种集成方式：
 
-### 步骤 1：安装 MCP Server 依赖
+### 方式一：原生插件（推荐）
+
+原生插件将工具直接注册到 AI 的工具列表中，运行在 OpenClaw 进程内。相比 MCP+mcporter 方式：
+- **超时可控**：AbortSignal 超时返回异常，AI 总能看到错误信息（不会 SIGKILL → 零输出）
+- **延迟更低**：无需启动子进程
+- **更可靠**：不依赖 mcporter daemon
+
+#### 步骤 1：安装插件
+
+```bash
+# 用 --link 符号链接安装（更新时无需重装）
+openclaw plugins install --link /opt/search-stack/plugin/
+```
+
+#### 步骤 2：配置
+
+编辑 `~/.openclaw/openclaw.json`，在 `plugins.entries` 中添加：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "search-stack": {
+        "enabled": true,
+        "config": {
+          "apiUrl": "http://127.0.0.1:17080",
+          "apiKey": "your_proxy_api_key",
+          "tikhubApiKey": "your_tikhub_key"
+        }
+      }
+    }
+  }
+}
+```
+
+> `apiKey` 的值就是 `.env` 中的 `PROXY_API_KEY`。
+> `tikhubApiKey` 可选，填入 [TikHub](https://tikhub.io) API Key 可启用社交媒体 API。
+> **注意：** 配置必须放在 `config` 嵌套对象内，不能直接放在 `search-stack` 下。
+
+#### 步骤 3：禁用内置 Brave 搜索
+
+编辑 `~/.openclaw/openclaw.json`：
+
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      }
+    }
+  }
+}
+```
+
+#### 步骤 4：创建 Skill 文件
+
+创建 `~/.openclaw/workspace/skills/web-search/SKILL.md`，内容参见仓库中的 SKILL.md 示例。Skill 指导 AI 何时以及如何使用搜索工具（两步法原则、Cookie 工作流等）。
+
+#### 步骤 5：重启并验证
+
+```bash
+sudo systemctl restart openclaw
+
+# 验证插件加载
+openclaw plugins list  # 应显示 search-stack: loaded
+
+# 验证工具注册（通过 AI 对话或 gateway API）
+# AI 应能直接看到 web_search 等工具，无需 exec
+```
+
+> **重要：** 如果 AI 仍在使用旧方式，需要归档旧 session。OpenClaw 的会话上下文会缓存之前的工具模式，即使配置已更新，旧 session 仍会沿用旧行为。详见下方「常见问题 → AI 不使用 search-stack」。
+
+### 方式二：MCP + mcporter（备选）
+
+适用于不想安装原生插件、或需要在 OpenClaw 以外的环境使用的场景。
+
+#### 步骤 1：安装 MCP Server 依赖
 
 MCP Server 使用 [Bun](https://bun.sh) + `@modelcontextprotocol/sdk` 运行：
 
@@ -202,7 +279,7 @@ curl -fsSL https://bun.sh/install | bash
 bun add -g @modelcontextprotocol/sdk zod
 ```
 
-### 步骤 2：注册到 mcporter
+#### 步骤 2：注册到 mcporter
 
 编辑 `~/.mcporter/mcporter.json`，添加 search-stack：
 
@@ -215,23 +292,11 @@ bun add -g @modelcontextprotocol/sdk zod
       "keepAlive": true,
       "env": {
         "SEARCH_STACK_URL": "http://127.0.0.1:17080",
-        "SEARCH_STACK_API_KEY": "your_proxy_api_key"
+        "SEARCH_STACK_API_KEY": "your_proxy_api_key",
+        "TIKHUB_API_KEY": "your_tikhub_key"
       }
     }
   }
-}
-```
-
-> `SEARCH_STACK_API_KEY` 的值就是 `.env` 中的 `PROXY_API_KEY`。
-> `command` 填 Bun 的完整路径，用 `which bun` 查看。
-
-（可选）如果要用 [TikHub](https://tikhub.io) 社交媒体 API，添加 `TIKHUB_API_KEY`：
-
-```json
-"env": {
-  "SEARCH_STACK_URL": "http://127.0.0.1:17080",
-  "SEARCH_STACK_API_KEY": "your_proxy_api_key",
-  "TIKHUB_API_KEY": "your_tikhub_key"
 }
 ```
 
@@ -243,143 +308,15 @@ mcporter list
 # 应显示 search-stack (6 tools) healthy
 ```
 
-### 步骤 3：创建 OpenClaw Skill
+#### 步骤 3：创建 Skill 并重启
 
-创建文件 `~/.openclaw/workspace/skills/web-search/SKILL.md`：
+创建 `~/.openclaw/workspace/skills/web-search/SKILL.md`（使用 mcporter exec 调用格式），禁用 Brave 搜索，重启 OpenClaw。
 
-> **核心要点：** OpenClaw 的 AI 通过 `exec` 工具执行 shell 命令来调用 MCP 工具。SKILL.md 里必须用具体的 `mcporter call search-stack.*` 命令格式，不能用抽象的工具名。
+> **注意：** MCP+mcporter 方式中，AI 通过 `exec` 工具执行 `mcporter call search-stack.*` 命令。超时时 SIGKILL 会导致零输出，AI 可能认为"搜索引擎挂了"。推荐使用原生插件方式避免此问题。
 
-<details>
-<summary>完整 SKILL.md 示例（点击展开）</summary>
+### 工具列表
 
-```markdown
----
-name: web-search
-description: |
-  Web search and anti-bot page fetching via search-stack MCP (through mcporter).
-  Triggers: "搜索", "search", "查一下", "look up", "抓取网页", "fetch url", "cookie", "登录".
-user-invocable: true
-metadata:
-  openclaw:
-    emoji: "🔍"
-    requires:
-      bins: ["mcporter"]
----
-
-# Web Search & Anti-Bot Fetch
-
-**内置 Brave 搜索已禁用。** 所有网页搜索和抓取通过 `mcporter call search-stack.*` 命令执行。
-
-## 搜索 — web_search
-
-mcporter call search-stack.web_search query="搜索关键词" --output json
-
-常用参数：
-- `query="关键词"` — 必填
-- `count:5` — 结果数量 (1-10)
-- `enrich:true` — 同时抓取每个结果的全文内容（研究模式）
-- `max_chars:8000` — enrich 模式下每页最大字符数
-- `render:true` — enrich 时用 Chrome 渲染（反爬虫站点）
-
-示例：
-  # 基本搜索
-  mcporter call search-stack.web_search query="claude opus 4.6 评测" count:5 --output json
-
-  # 深度研究（搜索+抓取全文）
-  mcporter call search-stack.web_search query="Python教程" count:3 enrich:true max_chars:5000 --output json
-
-## 抓取网页 — web_fetch
-
-mcporter call search-stack.web_fetch url="https://example.com" --output json
-
-常用参数：
-- `url="网址"` — 必填
-- `render:true` — 用 headless Chrome 渲染（反爬虫/JS 页面必须开启）
-- `max_chars:20000` — 最大抓取字符数
-- `bypass_cache:true` — 跳过缓存（更新 cookie 后重试用）
-
-## Cookie 管理与自动引导
-
-### 自动检测：需要 Cookie 的情况
-
-以下**任何一种情况**出现时，都**必须主动引导用户提供 Cookie**：
-
-1. `web_fetch` 返回内容包含 `** LOGIN REQUIRED **`
-2. 页面正文内容明显不完整（只有标题/摘要，正文被截断或为空）
-3. 返回了反爬提示（如"请登录"、"需要验证"、"请完成安全验证"等）
-4. 返回的内容与预期严重不符（如文章页只拿到导航栏/侧边栏）
-
-**引导方式（直接告诉用户这段话）：**
-
-> 这个网站的反爬比较严格，正文没有完整抓到。如果你需要完整内容，可以提供该网站的 Cookie：
-> 1. 在浏览器中打开该网址并登录
-> 2. 按 F12 → Network 标签 → 刷新页面
-> 3. 点击任意请求，找到请求头中的 `Cookie:` 一行
-> 4. 复制整个值发给我，我会自动保存并重新抓取
-
-**不要**：
-- 不要解释文章内容来代替抓取失败的事实
-- 不要跳过 Cookie 引导直接回答"抓不到"
-- 不要让用户自己去搞技术细节
-
-### 用户主动提供 Cookie
-
-当用户发送消息中包含 Cookie 信息时，**自动识别并处理**：
-
-**场景 A：用户同时发了网址和 Cookie**
-→ 从网址提取域名，自动保存 Cookie
-
-**场景 B：用户只发了 Cookie，没给网址**
-→ 询问用户这个 Cookie 对应哪个网站
-
-**场景 C：用户发了网址但没有 Cookie**
-→ 给出 F12 获取 Cookie 的步骤
-
-Cookie 管理命令：
-  # 查看已配置域名
-  mcporter call search-stack.cookies_list --output json
-
-  # 保存 Cookie
-  mcporter call search-stack.cookies_update domain="zhihu.com" raw="sid=abc; token=xyz" --output json
-
-  # 删除域名 Cookie
-  mcporter call search-stack.cookies_delete domain="zhihu.com" --output json
-
-## 使用规则
-
-1. **搜索一律用 `search-stack.web_search`** — 内置搜索已禁用
-2. **普通网页可先试内置 `web_fetch`**，失败后用 `search-stack.web_fetch`
-3. **反爬虫站用 `search-stack.web_fetch render:true`**
-4. **深度研究用 `search-stack.web_search enrich:true`** — 搜索+抓全文一步到位
-5. 遇到 `LOGIN REQUIRED` 或**正文不完整** → **必须主动引导用户提供 Cookie**
-6. 用户发送 Cookie 文本时 → **自动识别、提取域名、保存**，不要再问"要不要保存"
-7. **始终加 `--output json`** 以便解析结果
-8. **命令超时处理**：最多重试 1 次，仍然失败则告知用户并建议换种方式
-```
-
-</details>
-
-### 步骤 4：禁用内置 Brave 搜索
-
-编辑 `~/.openclaw/openclaw.json`，添加：
-
-```json
-{
-  "search": {
-    "enabled": false
-  }
-}
-```
-
-### 步骤 5：重启 OpenClaw
-
-```bash
-sudo systemctl restart openclaw
-```
-
-> **重要：** 如果 AI 仍在使用旧的 Brave 搜索，需要归档旧 session。OpenClaw 的会话上下文会缓存之前的工具模式，即使 SKILL.md 已更新，旧 session 仍会沿用旧行为。详见下方「常见问题 → AI 不使用 search-stack」。
-
-### MCP Server 提供的工具
+无论使用原生插件还是 MCP 方式，提供的工具相同：
 
 | 工具 | 说明 |
 |------|------|
@@ -754,10 +691,13 @@ search-stack/
 ├── search-stack.yml          # Docker Compose 编排
 ├── .env                      # 环境变量（密钥，不入 Git）
 ├── .env.example              # 环境变量模板
+├── plugin/
+│   ├── openclaw.plugin.json  # OpenClaw 原生插件 manifest
+│   └── index.ts              # 插件入口（推荐集成方式）
 ├── proxy/
 │   ├── Dockerfile            # 代理服务镜像
 │   ├── app.py                # FastAPI 主程序（REST API）
-│   ├── mcp-server.ts         # MCP Server（stdio，Bun 运行）
+│   ├── mcp-server.ts         # MCP Server（stdio，备选集成方式）
 │   ├── cookies.json          # Cookie 存储（运行时自动更新）
 │   ├── cookies.json.example  # Cookie 格式示例
 │   └── requirements.txt      # Python 依赖

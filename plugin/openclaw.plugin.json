@@ -1,0 +1,15 @@
+{
+  "id": "search-stack",
+  "name": "Search Stack",
+  "description": "Web search, page fetching, and cookie management via search-stack REST API.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "apiUrl": { "type": "string", "description": "search-stack REST API URL" },
+      "apiKey": { "type": "string", "description": "API key for search-stack" },
+      "tikhubApiKey": { "type": "string", "description": "TikHub API key (optional)" }
+    }
+  }
+}
