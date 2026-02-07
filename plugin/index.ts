@@ -201,7 +201,9 @@ export default function register(api: OpenClawPluginApi) {
     description:
       "Fetch a URL and extract its main text content. Supports headless Chrome rendering " +
       "for anti-bot / JS-heavy pages. When the response contains '** LOGIN REQUIRED **', " +
-      "the site needs cookies — send the included login link to the user, then retry with bypass_cache.",
+      "the site needs cookies — send the included login link to the user. " +
+      "IMPORTANT: After user logs in via Cookie Catcher, you MUST set bypass_cache=true to skip " +
+      "the cached pre-login result and fetch fresh content with the new cookies.",
     parameters: Type.Object({
       url: Type.String({ description: "URL to fetch" }),
       render: Type.Optional(
@@ -217,7 +219,7 @@ export default function register(api: OpenClawPluginApi) {
         Type.Number({ description: "Timeout in seconds (default ~25)" }),
       ),
       bypass_cache: Type.Optional(
-        Type.Boolean({ description: "Skip cache — use after updating cookies" }),
+        Type.Boolean({ description: "Skip cache and fetch fresh. REQUIRED after user logs in or cookies are updated — otherwise you get stale pre-login cached result." }),
       ),
       headers: Type.Optional(
         Type.String({
@@ -554,11 +556,21 @@ export default function register(api: OpenClawPluginApi) {
         "NEVER call this as the first step. Always try own tools first. " +
         "Covers: Douyin, TikTok, Xiaohongshu, Weibo, Bilibili, Instagram, YouTube, Twitter/X. " +
         "Has automatic fallback: if TikHub fails and the request has a keyword, " +
-        "it falls back to web search automatically.",
+        "it falls back to web search automatically. " +
+        "Common tool names (use EXACTLY these, do NOT guess): " +
+        "xiaohongshu_web_search_notes(keyword), xiaohongshu_app_search_notes(keyword,page), " +
+        "xiaohongshu_app_fetch_note_info(note_id), " +
+        "tiktok_web_fetch_search_video(keyword,count), " +
+        "douyin_app_fetch_hot_search_list(), " +
+        "weibo_web_v2_fetch_hot_search_summary(), " +
+        "bilibili_web_fetch_search_result(keyword,page), " +
+        "youtube_web_fetch_search_result(keyword).",
       parameters: Type.Object({
         tool_name: Type.String({
           description:
-            "TikHub tool name, e.g. 'tiktok_web_fetch_search_video', 'douyin_app_fetch_hot_search_list'",
+            "TikHub tool name — use EXACT names from the tool description above. " +
+            "Do NOT guess or fabricate tool names (e.g. 'xiaohongshu_web_fetch_search_notes' does NOT exist, " +
+            "the correct name is 'xiaohongshu_web_search_notes').",
         }),
         arguments: Type.Optional(
           Type.Unknown({

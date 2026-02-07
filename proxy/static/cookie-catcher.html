@@ -47,6 +47,9 @@ canvas{max-width:100%;max-height:100%;cursor:default;background:#111}
 .btn-save:hover:not(:disabled){background:#218838}
 .btn-close{background:#6c757d;color:#fff}
 .btn-close:hover:not(:disabled){background:#5a6268}
+.btn-kb{background:#17a2b8;color:#fff;display:none}
+.btn-kb:hover:not(:disabled){background:#138496}
+.btn-kb.active{background:#0d6efd}
 .toast{
   position:fixed;top:16px;right:16px;max-width:420px;
   padding:12px 20px;border-radius:8px;font-size:14px;
@@ -75,6 +78,7 @@ canvas{max-width:100%;max-height:100%;cursor:default;background:#111}
 <div class="bottombar">
   <div class="info" id="info">Connecting...</div>
   <div class="actions">
+    <button class="btn btn-kb" id="kbToggle" disabled>Keyboard</button>
     <button class="btn btn-save" id="save" disabled>Save Cookies</button>
     <button class="btn btn-close" id="close" disabled>Close</button>
   </div>
@@ -86,9 +90,11 @@ canvas{max-width:100%;max-height:100%;cursor:default;background:#111}
 const $ = id => document.getElementById(id);
 const canvas = $('screen'), ctx = canvas.getContext('2d');
 const urlInput = $('url'), goBtn = $('go'), saveBtn = $('save'), closeBtn = $('close');
+const kbToggle = $('kbToggle');
 const overlay = $('overlay'), infoEl = $('info'), toastEl = $('toast');
 const mobileKb = $('mobileKb');
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+let kbActive = false; // mobile keyboard toggle state
 
 const params = new URLSearchParams(location.search);
 const apiKey = params.get('key') || '';
@@ -145,17 +151,32 @@ function connect() {
         document.title = m.title + ' — Cookie Catcher';
         break;
       case 'cookies_saved':
-        toast('Saved ' + m.count + ' cookies for ' + m.domain + ' — closing...');
+        // Show persistent success — hide canvas, show big success message
+        canvas.style.display = 'none';
+        overlay.innerHTML = '<div style="color:#28a745;font-size:24px;font-weight:bold">Cookie Saved</div>' +
+          '<div style="margin-top:12px">Saved ' + m.count + ' cookies for ' + m.domain + '</div>' +
+          '<div style="margin-top:8px;color:#aaa">You can close this page now.</div>';
+        overlay.style.display = 'block';
+        infoEl.textContent = m.count + ' cookies saved for ' + m.domain;
+        saveBtn.disabled = true; closeBtn.disabled = true; kbToggle.disabled = true;
+        kbActive = false; kbToggle.classList.remove('active');
+        started = false;
         break;
       case 'error':
         toast(m.message, false);
+        // Reset save button if it was in saving state
+        saveBtn.textContent = 'Save Cookies';
+        if (started) saveBtn.disabled = false;
         break;
       case 'closed':
-        toast('Session closed');
         canvas.style.display = 'none';
-        overlay.textContent = 'Session closed';
+        // Only show "Session closed" if not already showing success
+        if (!overlay.innerHTML.includes('Cookie Saved')) {
+          overlay.textContent = 'Session closed';
+        }
         overlay.style.display = 'block';
-        saveBtn.disabled = true; closeBtn.disabled = true;
+        saveBtn.disabled = true; closeBtn.disabled = true; kbToggle.disabled = true;
+        kbActive = false; kbToggle.classList.remove('active');
         started = false;
         break;
     }
@@ -177,14 +198,27 @@ function doNavigate(url) {
   overlay.textContent = 'Loading...';
   overlay.style.display = 'block';
   send({ type: 'navigate', url });
-  saveBtn.disabled = false; closeBtn.disabled = false;
+  saveBtn.disabled = false; closeBtn.disabled = false; kbToggle.disabled = false;
   started = true;
 }
+
+// Show keyboard toggle on mobile
+if (isMobile) kbToggle.style.display = 'inline-block';
+kbToggle.onclick = () => {
+  kbActive = !kbActive;
+  kbToggle.classList.toggle('active', kbActive);
+  if (kbActive) { mobileKb.focus(); } else { mobileKb.blur(); canvas.focus(); }
+};
 
 goBtn.onclick = () => doNavigate(urlInput.value.trim());
 urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') goBtn.click(); });
 
-saveBtn.onclick = () => send({ type: 'save_cookies' });
+saveBtn.onclick = () => {
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving...';
+  infoEl.textContent = 'Extracting cookies...';
+  send({ type: 'save_cookies' });
+};
 closeBtn.onclick = () => send({ type: 'close' });
 
 // ---- Mouse ----
@@ -258,8 +292,8 @@ function tcoords(t) {
 }
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
-  // Focus hidden input to trigger virtual keyboard on mobile
-  if (isMobile && started) mobileKb.focus();
+  // Only focus hidden input if keyboard toggle is active
+  if (isMobile && kbActive) mobileKb.focus();
   else canvas.focus();
   const {x, y} = tcoords(e.touches[0]);
   send({ type:'mouse', action:'mousePressed', x, y, button:'left', clickCount:1 });

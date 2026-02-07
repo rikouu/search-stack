@@ -1110,17 +1110,17 @@ async def cookie_catcher_ws(ws: WebSocket):
                             "message": f"No cookies found for {domain} ({result['total']} total in browser)",
                         })
                         continue
-                    # Save via existing cookie persistence
+                    # Save cookies to disk
                     _domain_cookies[domain] = cookies
                     save_cookies()
+                    # Notify frontend of success
                     await ws.send_json({
                         "type": "cookies_saved",
                         "domain": domain,
                         "count": len(cookies),
                         "names": [c["name"] for c in cookies],
                     })
-                    # Auto-close after saving — give frontend time to show toast
-                    await asyncio.sleep(2)
+                    # Close CDP session to release renderer immediately
                     await session.close()
                     break
                 except Exception as e:
@@ -1135,4 +1135,16 @@ async def cookie_catcher_ws(ws: WebSocket):
     except Exception as e:
         log.warning("cookie-catcher ws error: %s", e)
     finally:
+        # Auto-save cookies on disconnect (user closed browser tab etc.)
+        if not session.closed and session._ws and session.url:
+            try:
+                result = await session.extract_cookies()
+                cookies = result["cookies"]
+                domain = result["domain"]
+                if cookies:
+                    _domain_cookies[domain] = cookies
+                    save_cookies()
+                    log.info("cookie-catcher: auto-saved %d cookies for %s on disconnect", len(cookies), domain)
+            except Exception:
+                pass
         await session.close()
