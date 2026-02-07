@@ -321,6 +321,132 @@ mcporter list
 
 > **注意：** MCP+mcporter 方式中，AI 通过 `exec` 工具执行 `mcporter call search-stack.*` 命令。超时时 SIGKILL 会导致零输出，AI 可能认为"搜索引擎挂了"。推荐使用原生插件方式避免此问题。
 
+### 异地部署（OpenClaw 和 Search Stack 在不同机器）
+
+适用场景：Search Stack 运行在服务器 A（有公网域名），OpenClaw 运行在服务器 B，需要远程调用 Search Stack 的 API。
+
+```
+服务器 A (search-stack)              服务器 B (openclaw)
+┌──────────────────────┐             ┌──────────────────────┐
+│  Docker 四件套        │   HTTPS     │  OpenClaw            │
+│  search-proxy :17080 │◄────────────│  search-stack 插件    │
+│  Redis / SearXNG     │             │                      │
+│  Browserless         │             │  只需要 plugin/ 目录  │
+└──────────────────────┘             └──────────────────────┘
+```
+
+#### 步骤 1：服务器 A — 配置反向代理（HTTPS）
+
+Search Stack 默认只监听 `127.0.0.1:17080`，异地访问需要通过 Nginx 反向代理暴露 HTTPS 端口。
+
+Nginx 配置示例（假设域名为 `search.example.com`）：
+
+```nginx
+location /search-stack/ {
+    proxy_pass http://127.0.0.1:17080/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+
+    # Cookie Catcher WebSocket 支持
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+> **安全提醒：** API Key 会在请求头中明文传输，**必须使用 HTTPS**。建议用 Certbot 自动申请 Let's Encrypt 证书。
+
+#### 步骤 2：服务器 B — 获取插件代码
+
+只需要 `plugin/` 和 `skill-template/` 两个目录，不需要安装 Docker 或完整项目：
+
+```bash
+# 方法一：克隆完整仓库（简单）
+git clone https://github.com/pinkpills/search-stack.git /opt/search-stack
+cd /opt/search-stack/plugin && npm install
+
+# 方法二：只下载需要的目录（轻量）
+mkdir -p /opt/search-stack && cd /opt/search-stack
+# 下载 plugin/ 和 skill-template/
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/pinkpills/search-stack.git .
+git sparse-checkout set plugin skill-template
+cd plugin && npm install
+```
+
+#### 步骤 3：服务器 B — 安装插件到 OpenClaw
+
+```bash
+openclaw plugins install --link /opt/search-stack/plugin/
+```
+
+#### 步骤 4：服务器 B — 配置远程 API 地址
+
+编辑 `~/.openclaw/openclaw.json`：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "search-stack": {
+        "enabled": true,
+        "config": {
+          "apiUrl": "https://search.example.com/search-stack",
+          "apiKey": "your_proxy_api_key",
+          "publicUrl": "https://search.example.com/search-stack",
+          "tikhubApiKey": "your_tikhub_key"
+        }
+      }
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": false
+      }
+    }
+  }
+}
+```
+
+配置说明：
+
+| 字段 | 说明 |
+|------|------|
+| `apiUrl` | 服务器 A 的 Search Stack API 地址（通过 Nginx 代理后的 HTTPS URL） |
+| `apiKey` | 服务器 A `.env` 中的 `PROXY_API_KEY` |
+| `publicUrl` | Cookie Catcher 链接中使用的公网 URL（用户浏览器需要能访问），通常与 `apiUrl` 相同 |
+| `tikhubApiKey` | （可选）TikHub API Key |
+
+#### 步骤 5：服务器 B — 创建 Skill 并重启
+
+```bash
+mkdir -p ~/.openclaw/workspace/skills/web-search/
+cp /opt/search-stack/skill-template/SKILL.md ~/.openclaw/workspace/skills/web-search/SKILL.md
+sudo systemctl restart openclaw
+```
+
+#### 验证
+
+在 OpenClaw 中对话测试：
+
+```
+用户: "搜索一下 Claude Opus 4.6 评测"
+AI:   调用 web_search → 返回结果（来自远程 Search Stack）
+
+用户: "打开第一条链接看看全文"
+AI:   调用 page_fetch → 返回全文（远程 Browserless 渲染）
+```
+
+如果工具调用失败，检查：
+1. 服务器 B 能否访问 `apiUrl`：`curl -H "X-API-Key: KEY" https://search.example.com/search-stack/health`
+2. 插件是否加载：`openclaw plugins list`
+3. 旧 session 缓存：归档旧 session 后重启（详见「常见问题 → AI 不使用 search-stack」）
+
 ### 工具列表
 
 无论使用原生插件还是 MCP 方式，提供的工具相同：
