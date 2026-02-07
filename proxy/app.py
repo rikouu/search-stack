@@ -40,6 +40,8 @@ RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
 BROWSERLESS_HTTP = os.getenv("BROWSERLESS_HTTP", "http://browserless:3000").rstrip("/")
 BROWSERLESS_TOKEN = os.getenv("BROWSERLESS_TOKEN", "").strip()
 FETCH_TIMEOUT = float(os.getenv("FETCH_TIMEOUT", "25"))
+ENRICH_PER_PAGE_TIMEOUT = float(os.getenv("ENRICH_PER_PAGE_TIMEOUT", "10"))  # per-page timeout during enrich (shorter)
+ENRICH_WALL_TIMEOUT = float(os.getenv("ENRICH_WALL_TIMEOUT", "20"))  # total wall-clock for all enrich fetches
 MAX_FETCH_BYTES = int(os.getenv("MAX_FETCH_BYTES", "2000000"))  # 2MB default
 
 FETCH_USER_AGENT = os.getenv(
@@ -678,6 +680,7 @@ async def search(req: Request, payload: SearchRequest):
     if enrich:
         import asyncio
         sem = asyncio.Semaphore(concurrency)
+        enrich_timeout = min(ENRICH_PER_PAGE_TIMEOUT, FETCH_TIMEOUT)
 
         async def enrich_one(it: Dict[str, Any]) -> Dict[str, Any]:
             url = it.get("url") or ""
@@ -691,16 +694,40 @@ async def search(req: Request, payload: SearchRequest):
                         data2 = json.loads(c2)
                         return {**it, "fetched": True, "content": data2.get("text", ""), "page_title": data2.get("title", ""), "render": render, "cached_fetch": True}
 
-                    data = await fetch_and_extract(url, render=render, timeout=FETCH_TIMEOUT, max_chars=max_chars)
+                    data = await fetch_and_extract(url, render=render, timeout=enrich_timeout, max_chars=max_chars)
                     await rds.setex(f_cache_key, CACHE_TTL, json.dumps(data, ensure_ascii=False))
                     return {**it, "fetched": True, "content": data.get("text", ""), "page_title": data.get("title", ""), "render": render, "cached_fetch": False}
             except Exception as e:
                 log.warning("enrich failed url=%s: %s", url, e)
                 return {**it, "fetched": False, "content": "", "fetch_error": f"{type(e).__name__}: {e}"}
 
-        # 单层信号量，直接 gather
-        enriched = await asyncio.gather(*[enrich_one(it) for it in results])
-        results = list(enriched)
+        # Wall-clock timeout: return partial results instead of hanging
+        tasks_map: Dict[asyncio.Task, int] = {}
+        for i, it in enumerate(results):
+            task = asyncio.create_task(enrich_one(it))
+            tasks_map[task] = i
+
+        done, pending = await asyncio.wait(tasks_map.keys(), timeout=ENRICH_WALL_TIMEOUT)
+
+        # Cancel any still-running tasks
+        for t in pending:
+            t.cancel()
+
+        # Build enriched results, preserving original order
+        enriched: List[Dict[str, Any]] = [{}] * len(results)
+        for task, idx in tasks_map.items():
+            if task in done:
+                try:
+                    enriched[idx] = task.result()
+                except Exception as e:
+                    enriched[idx] = {**results[idx], "fetched": False, "content": "", "fetch_error": f"{type(e).__name__}: {e}"}
+            else:
+                enriched[idx] = {**results[idx], "fetched": False, "content": "", "fetch_error": "timeout (wall clock exceeded)"}
+
+        if pending:
+            log.warning("enrich wall-clock timeout: %d/%d pages timed out", len(pending), len(results))
+
+        results = enriched
 
     out = {"provider": result["provider"], "results": results}
     await rds.setex(cache_key, CACHE_TTL, json.dumps(out, ensure_ascii=False))

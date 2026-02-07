@@ -25,16 +25,23 @@ const TIKHUB_URL = "https://mcp.tikhub.io/tools/call";
 // HTTP helpers
 // =============================================================================
 
+const API_TIMEOUT_MS = 28_000; // Must be under OpenClaw's 30s exec limit
+
 async function api(
   method: string,
   path: string,
   body?: unknown,
+  timeoutMs: number = API_TIMEOUT_MS,
 ): Promise<unknown> {
   const url = `${BASE_URL}${path}`;
   const headers: Record<string, string> = {
     "X-API-Key": API_KEY,
   };
-  const opts: RequestInit = { method, headers };
+  const opts: RequestInit = {
+    method,
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -116,47 +123,80 @@ server.registerTool(
     if (params.render !== undefined) body.render = params.render;
     if (params.concurrency !== undefined) body.concurrency = params.concurrency;
 
-    const data = (await api("POST", "/search", body)) as {
-      query: string;
-      provider: string;
-      results: {
-        title: string;
-        url: string;
-        snippet?: string;
-        content?: string;
-        fetched?: boolean;
-        fetch_error?: string;
-      }[];
-    };
+    try {
+      const data = (await api("POST", "/search", body)) as {
+        query: string;
+        provider: string;
+        results: {
+          title: string;
+          url: string;
+          snippet?: string;
+          content?: string;
+          fetched?: boolean;
+          fetch_error?: string;
+        }[];
+      };
 
-    // Format as readable text
-    const lines: string[] = [];
-    lines.push(
-      `Search: "${data.query}" (${data.results.length} results via ${data.provider})`,
-    );
-    lines.push("");
-
-    for (let i = 0; i < data.results.length; i++) {
-      const r = data.results[i];
-      lines.push(`${i + 1}. ${r.title}`);
-      lines.push(`   ${r.url}`);
-      if (r.snippet) {
-        lines.push(`   ${r.snippet}`);
-      }
-      if (r.content) {
-        lines.push("");
-        lines.push(`   --- Page Content ---`);
-        lines.push(`   ${r.content}`);
-      }
-      if (r.fetch_error) {
-        lines.push(`   [Fetch error: ${r.fetch_error}]`);
-      }
+      // Format as readable text
+      const lines: string[] = [];
+      lines.push(
+        `Search: "${data.query}" (${data.results.length} results via ${data.provider})`,
+      );
       lines.push("");
-    }
 
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+      for (let i = 0; i < data.results.length; i++) {
+        const r = data.results[i];
+        lines.push(`${i + 1}. ${r.title}`);
+        lines.push(`   ${r.url}`);
+        if (r.snippet) {
+          lines.push(`   ${r.snippet}`);
+        }
+        if (r.content) {
+          lines.push("");
+          lines.push(`   --- Page Content ---`);
+          lines.push(`   ${r.content}`);
+        }
+        if (r.fetch_error) {
+          lines.push(`   [Fetch error: ${r.fetch_error}]`);
+        }
+        lines.push("");
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // On timeout, retry without enrich to at least return search results
+      if (params.enrich && (msg.includes("TimeoutError") || msg.includes("abort"))) {
+        try {
+          const fallbackBody = { query: params.query, count: params.count || 5, enrich: false };
+          const data = (await api("POST", "/search", fallbackBody, 10_000)) as {
+            query: string;
+            provider: string;
+            results: { title: string; url: string; snippet?: string }[];
+          };
+          const lines: string[] = [];
+          lines.push(`[Enrich timed out — returning search results without full text]`);
+          lines.push(`Search: "${data.query}" (${data.results.length} results via ${data.provider})`);
+          lines.push("");
+          for (let i = 0; i < data.results.length; i++) {
+            const r = data.results[i];
+            lines.push(`${i + 1}. ${r.title}`);
+            lines.push(`   ${r.url}`);
+            if (r.snippet) lines.push(`   ${r.snippet}`);
+            lines.push("");
+          }
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        } catch {
+          // Even fallback failed
+        }
+      }
+      return {
+        content: [{ type: "text", text: `Search failed: ${msg}` }],
+        isError: true,
+      };
+    }
   },
 );
 
@@ -215,50 +255,58 @@ server.registerTool(
       }
     }
 
-    const data = (await api("POST", "/fetch", body)) as {
-      url: string;
-      title?: string;
-      text?: string;
-      status_code?: number;
-      needs_login?: boolean;
-      has_cookies?: boolean;
-      cached?: boolean;
-    };
+    try {
+      const data = (await api("POST", "/fetch", body)) as {
+        url: string;
+        title?: string;
+        text?: string;
+        status_code?: number;
+        needs_login?: boolean;
+        has_cookies?: boolean;
+        cached?: boolean;
+      };
 
-    const lines: string[] = [];
+      const lines: string[] = [];
 
-    if (data.needs_login) {
-      lines.push("** LOGIN REQUIRED **");
-      lines.push("");
-      const domain = new URL(data.url).hostname.replace(/^www\./, "");
-      if (data.has_cookies) {
+      if (data.needs_login) {
+        lines.push("** LOGIN REQUIRED **");
+        lines.push("");
+        const domain = new URL(data.url).hostname.replace(/^www\./, "");
+        if (data.has_cookies) {
+          lines.push(
+            `The cookies for ${domain} appear to have expired. Please paste fresh cookies from your browser.`,
+          );
+        } else {
+          lines.push(
+            `This site requires login. Please paste your browser cookies for ${domain}.`,
+          );
+        }
         lines.push(
-          `The cookies for ${domain} appear to have expired. Please paste fresh cookies from your browser.`,
+          `(DevTools → Application → Cookies, or copy the Cookie header value)`,
+        );
+        lines.push("");
+        lines.push(
+          `After saving cookies with cookies_update, retry this fetch with bypass_cache=true.`,
         );
       } else {
-        lines.push(
-          `This site requires login. Please paste your browser cookies for ${domain}.`,
-        );
+        if (data.title) lines.push(`Title: ${data.title}`);
+        if (data.url) lines.push(`URL: ${data.url}`);
+        if (data.status_code) lines.push(`Status: ${data.status_code}`);
+        if (data.cached) lines.push(`(cached)`);
+        lines.push("");
+        lines.push(data.text || "(no content extracted)");
       }
-      lines.push(
-        `(DevTools → Application → Cookies, or copy the Cookie header value)`,
-      );
-      lines.push("");
-      lines.push(
-        `After saving cookies with cookies_update, retry this fetch with bypass_cache=true.`,
-      );
-    } else {
-      if (data.title) lines.push(`Title: ${data.title}`);
-      if (data.url) lines.push(`URL: ${data.url}`);
-      if (data.status_code) lines.push(`Status: ${data.status_code}`);
-      if (data.cached) lines.push(`(cached)`);
-      lines.push("");
-      lines.push(data.text || "(no content extracted)");
-    }
 
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        content: [{ type: "text", text: `Fetch failed: ${msg}` }],
+        isError: true,
+      };
+    }
   },
 );
 
