@@ -74,6 +74,7 @@ AI Agent 专用的 Web 搜索与抓取中间层。
 - **API Key 鉴权 + 限流** — 滑动窗口限流
 - **MCP Server** — stdio 模式 MCP Server（`mcp-server.ts`），可通过 mcporter 注册供 OpenClaw 等 Agent 使用
 - **TikHub 社交媒体 API** — 可选集成，代理 TikHub 803 个社交平台工具（抖音、TikTok、微博等），内置自动回退
+- **HTTP 代理** — 支持 HTTP / SOCKS5 代理，用于反爬固定 IP 或翻墙访问被墙网站（YouTube 等）
 - **全异步** — async Redis + 共享 httpx 连接池，高并发低延迟
 
 ---
@@ -789,6 +790,7 @@ POST /cookies/reload
 | `BLOCK_DOMAINS` | - | 域名黑名单（逗号分隔） |
 | `DEDUPE` | `true` | URL 去重 |
 | `MAX_PER_HOST` | `2` | 同域名最多返回结果数 |
+| `PROXY_URL` | - | HTTP 代理，详见 [HTTP 代理](#http-代理可选) |
 
 ### MCP Server 环境变量
 
@@ -852,6 +854,60 @@ search-stack/
     ├── settings.yml          # SearXNG 配置（首次启动自动生成）
     └── settings.yml.example  # SearXNG 配置模板
 ```
+
+## HTTP 代理（可选）
+
+配置 `PROXY_URL` 后，所有出站请求通过代理发出，适用于：
+
+- **反爬固定 IP** — 目标网站看到代理 IP 而非服务器真实 IP
+- **翻墙出海** — 中国区域服务器访问 YouTube、Google 等被墙网站
+
+### 配置
+
+在 `.env` 中设置：
+
+```bash
+# HTTP 代理
+PROXY_URL=http://host:port
+
+# 带认证的 HTTP 代理
+PROXY_URL=http://user:pass@host:port
+
+# SOCKS5 代理
+PROXY_URL=socks5://host:port
+
+# 带认证的 SOCKS5 代理
+PROXY_URL=socks5://user:pass@host:port
+```
+
+不配置或留空则所有请求直连，行为与之前完全一致。
+
+### 代理覆盖范围
+
+| 请求类型 | 走代理？ | 说明 |
+|----------|----------|------|
+| httpx 直连抓取（`render=false`） | ✅ | `http_client` 带 `proxy` 参数 |
+| Tavily / Serper API 调用 | ✅ | 同上 |
+| SearXNG → Google/DuckDuckGo 等 | ✅ | 通过 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量传递给 SearXNG 容器 |
+| Browserless Chrome 渲染（`render=true`） | ⚠️ 有条件 | 通过 Chrome `--proxy-server` 启动参数，**不支持带认证的代理**（见下方说明） |
+| 内部容器间通信（Redis、SearXNG API、Browserless API） | ❌ | 使用独立的 `http_internal` 客户端，永远不走代理 |
+
+### Chrome 渲染的代理限制
+
+Chrome 的 `--proxy-server` 启动参数只接受 `scheme://host:port` 格式，**没有传递用户名密码的机制**。因此：
+
+| 代理类型 | httpx 直连 | Chrome 渲染 |
+|----------|-----------|-------------|
+| 无认证（IP 白名单） `http://host:port` | ✅ | ✅ |
+| 带认证 `http://user:pass@host:port` | ✅ | ❌ 自动跳过，Chrome 走直连 |
+| SOCKS5 无认证 `socks5://host:port` | ✅ | ✅ |
+| SOCKS5 带认证 `socks5://user:pass@host:port` | ✅ | ❌ 自动跳过，Chrome 走直连 |
+
+> **推荐：** 如果需要 Chrome 渲染也走代理，使用 IP 白名单认证的代理（在代理服务商后台将服务器 IP 加白，去掉用户名密码）。大多数固定 IP 代理服务商都支持此方式。
+
+代码会自动检测 `PROXY_URL` 是否包含认证信息（`@`），有认证时跳过 Chrome 代理注入，确保 Browserless 渲染不会因认证失败而报错。
+
+---
 
 ## 安全说明
 

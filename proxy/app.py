@@ -53,6 +53,8 @@ FETCH_USER_AGENT = os.getenv(
 
 FETCH_DEFAULT_RENDER = os.getenv("FETCH_DEFAULT_RENDER", "true").lower() in ("1", "true", "yes", "y")
 
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
+
 # Cookie 注入（Browserless）
 COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.json")
 _domain_cookies: Dict[str, List[Dict[str, Any]]] = {}
@@ -246,23 +248,39 @@ MAX_PER_HOST = int(os.getenv("MAX_PER_HOST", "2"))
 
 # ===================== Global clients (set in lifespan) =====================
 rds: aioredis.Redis = None  # type: ignore
-http_client: httpx.AsyncClient = None  # type: ignore
+http_client: httpx.AsyncClient = None  # type: ignore  # external requests (may use proxy)
+http_internal: httpx.AsyncClient = None  # type: ignore  # internal Docker services (never proxied)
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    global rds, http_client
+    global rds, http_client, http_internal
     rds = aioredis.from_url(REDIS_URL, decode_responses=True)
-    http_client = httpx.AsyncClient(
+
+    base_kwargs: dict = {
+        "timeout": 30,
+        "follow_redirects": True,
+        "headers": {"User-Agent": FETCH_USER_AGENT},
+        "limits": httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    }
+    if PROXY_URL:
+        http_client = httpx.AsyncClient(**base_kwargs, proxy=PROXY_URL)
+        # Log proxy host without credentials
+        log.info("proxy enabled: %s", PROXY_URL.split("@")[-1])
+    else:
+        http_client = httpx.AsyncClient(**base_kwargs)
+
+    http_internal = httpx.AsyncClient(
         timeout=30,
         follow_redirects=True,
-        headers={"User-Agent": FETCH_USER_AGENT},
-        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     )
+
     load_cookies()
     log.info("search-proxy started, providers=%s", ORDER)
     yield
     await http_client.aclose()
+    await http_internal.aclose()
     await rds.aclose()
     log.info("search-proxy stopped")
 
@@ -514,7 +532,7 @@ async def serper_search(q: str, count: int) -> List[Dict[str, Any]]:
 
 async def searxng_search(q: str, count: int) -> List[Dict[str, Any]]:
     params = {"q": q, "format": "json"}
-    res = await http_client.get(f"{SEARXNG_URL}/search", params=params)
+    res = await http_internal.get(f"{SEARXNG_URL}/search", params=params)
     res.raise_for_status()
     data = res.json()
     out = []
@@ -566,7 +584,14 @@ async def fetch_via_browserless(url: str, timeout: float, cookies: Optional[List
         payload["cookies"] = cookies
         log.info("injecting %d cookies for %s", len(cookies), host_of(url))
 
-    res = await http_client.post(endpoint, params=params, json=payload, timeout=timeout + 10)
+    if PROXY_URL:
+        p = urlparse(PROXY_URL)
+        # Chrome --proxy-server doesn't support user:pass auth; skip if credentials present
+        if not p.username:
+            chrome_proxy = f"{p.scheme}://{p.hostname}:{p.port}" if p.port else f"{p.scheme}://{p.hostname}"
+            payload["launch"] = {"args": [f"--proxy-server={chrome_proxy}"]}
+
+    res = await http_internal.post(endpoint, params=params, json=payload, timeout=timeout + 10)
     res.raise_for_status()
     html = res.text
     headers = {k.lower(): v for k, v in res.headers.items()}

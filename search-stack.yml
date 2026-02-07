@@ -17,6 +17,10 @@ services:
     restart: always
     environment:
       - SEARXNG_SECRET=${SEARXNG_SECRET}
+      # SearXNG outgoing requests (Google, DuckDuckGo, etc.)
+      - HTTP_PROXY=${PROXY_URL}
+      - HTTPS_PROXY=${PROXY_URL}
+      - NO_PROXY=redis,search-proxy,browserless,localhost,127.0.0.1
     volumes:
       - /opt/search-stack/searxng:/etc/searxng
     healthcheck:
@@ -73,6 +77,9 @@ services:
       - BROWSERLESS_TOKEN=${BROWSERLESS_TOKEN}
       - FETCH_TIMEOUT=25
       - MAX_FETCH_BYTES=2000000
+
+      # ====== HTTP Proxy (optional) ======
+      - PROXY_URL=${PROXY_URL}
 
     volumes:
       - /opt/search-stack/proxy/cookies.json:/app/cookies.json

@@ -18,3 +18,8 @@ search:
 outgoing:
   request_timeout: 10.0
   max_request_timeout: 20.0
+  # Proxy for outgoing search requests (Google, DuckDuckGo, etc.)
+  # Uncomment if HTTP_PROXY env var doesn't work for your SearXNG version.
+  # proxies:
+  #   all://:
+  #     - http://proxy-host:port
