@@ -32,11 +32,15 @@ services:
     image: browserless/chrome:latest
     container_name: browserless
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4g
     environment:
       - TOKEN=${BROWSERLESS_TOKEN}
-      - MAX_CONCURRENT_SESSIONS=5
-      - CONNECTION_TIMEOUT=600000
-      - MAX_QUEUE_LENGTH=20
+      - MAX_CONCURRENT_SESSIONS=10
+      - CONNECTION_TIMEOUT=120000
+      - MAX_QUEUE_LENGTH=30
       - KEEP_ALIVE=true
       - ENABLE_STEALTH=true
       - DEFAULT_STEALTH=true

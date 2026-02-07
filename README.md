@@ -447,6 +447,31 @@ AI:   调用 page_fetch → 返回全文（远程 Browserless 渲染）
 2. 插件是否加载：`openclaw plugins list`
 3. 旧 session 缓存：归档旧 session 后重启（详见「常见问题 → AI 不使用 search-stack」）
 
+#### 多机并发与资源控制
+
+多台机器共用一个 Search Stack 时，Browserless Chrome 是主要瓶颈——每个并发渲染会话占用约 400-500MB 内存。默认配置已针对 3 台客户端优化：
+
+```yaml
+# search-stack.yml — browserless 部分
+MAX_CONCURRENT_SESSIONS=10    # 最多 10 个 Chrome 同时运行
+MAX_QUEUE_LENGTH=30           # 超出并发后排队上限
+CONNECTION_TIMEOUT=120000     # 单会话超时 2 分钟，防止长期占位
+deploy:
+  resources:
+    limits:
+      memory: 4g              # 内存硬上限，超了 OOM 自动重启，不拖垮整机
+```
+
+按客户端数量调整建议：
+
+| 客户端数 | `MAX_CONCURRENT_SESSIONS` | `memory` | 服务器内存建议 |
+|----------|--------------------------|----------|---------------|
+| 1-2 台 | 5 | 2g | 4GB+ |
+| 3-5 台 | 10 | 4g | 8GB+ |
+| 5-10 台 | 20 | 8g | 16GB+ |
+
+> 超出并发上限时，Browserless 会将请求排队等待；队列也满时返回 429，`page_fetch` 会报错但不影响搜索功能（`web_search` 不依赖 Chrome）。Cookie Catcher 另有 2 会话硬限制，多人同时登录需排队。
+
 ### 工具列表
 
 无论使用原生插件还是 MCP 方式，提供的工具相同：
